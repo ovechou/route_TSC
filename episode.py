@@ -122,7 +122,9 @@ def run(ep, agents, o, args, execute, name=None, router=None, adj_edge=None, gen
                         cav.router.store_step(
                             cav.veh_id, cav_state, action,
                             log_prob, value, action_mask=router_avail_action)
-                        final_reward = cav.termination_reward / 100.0
+                        dense_reward = float(np.mean(cav.reward)) if len(cav.reward) > 0 else 0.0
+                        terminal_reward = float(cav.termination_reward) / 20.0
+                        final_reward = terminal_reward + dense_reward
                         cav.router.finish_trajectory(cav.veh_id, final_reward)
                         if len(cav.reward) > 0:
                             cav_step_rewards.append(sum(cav.reward) / len(cav.reward))

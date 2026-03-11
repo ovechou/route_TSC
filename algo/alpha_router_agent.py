@@ -1,4 +1,5 @@
 import torch
+import traci
 
 from agent import CAVAgent
 from algo.alpha_router_net import AlphaRouterModel
@@ -160,3 +161,15 @@ class AlphaRouterCAVAgent(CAVAgent):
         if not self.traj_registered:
             self.router.new_trajectory(self.veh_id)
             self.traj_registered = True
+
+    def get_reward(self, road_state=None):
+        """
+        AlphaRouter-specific dense reward:
+        normalize step-time penalty to a compact range to reduce variance.
+        """
+        if self.done:
+            return float(self.termination_reward)
+
+        dt = traci.simulation.getTime() - self.act_time
+        reward = -dt / 10.0
+        return max(-1.0, min(0.0, reward))

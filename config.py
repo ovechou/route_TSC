@@ -88,15 +88,15 @@ ALPHA_ROUTER = {
     "NUM_SIMULATIONS": 50,
     "MAX_DEPTH": 5,
     "CPUCT": 1.1,
-    "SELECTION_COEF": 0.75,
+    "SELECTION_COEF": 0.3,
     "USE_MCTS": True,
 
     # Training: REINFORCE + value baseline (aligned with original AlphaRouter)
-    "LR": 1e-4,
-    "GAMMA": 0.99,
+    "LR": 3e-4,
+    "GAMMA": 0.95,
     "VAL_LOSS_COEF": 0.5,
-    "ENT_COEF": 0.01,
-    "MAX_GRAD_NORM": 1.0,
+    "ENT_COEF": 0.05,
+    "MAX_GRAD_NORM": 5.0,
 }
 
 RL = {

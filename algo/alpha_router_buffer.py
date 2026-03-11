@@ -194,13 +194,14 @@ class AlphaRouterTrainer:
 
         val_loss = nn.functional.mse_loss(all_values, rewards)
 
-        if self.buffer.num_trajectories > 1:
-            baseline = traj_rewards.mean()
-        else:
-            baseline = traj_values_mean
+        # Use value baseline at trajectory granularity and normalize advantage
+        # to reduce variance and stabilize REINFORCE updates.
+        advantage = traj_rewards - traj_values_mean.detach()
+        if advantage.numel() > 1:
+            advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
 
-        advantage = traj_rewards - baseline.detach()
-        p_loss = (advantage * traj_log_prob_sums).mean()
+        # Gradient descent on policy loss must use negative sign.
+        p_loss = -(advantage * traj_log_prob_sums).mean()
 
         entropy_bonus = -all_entropy.mean()
 
