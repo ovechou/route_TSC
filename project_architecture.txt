@@ -1,0 +1,269 @@
+================================================================================
+        项目架构梳理：route_TSC — 多智能体交通信号控制与车辆路由强化学习系统
+================================================================================
+
+一、项目概述
+--------------------------------------------------------------------------------
+基于 SUMO（Simulation of Urban Mobility）仿真平台的多智能体交通信号控制（TSC）与
+联网自动车辆（CAV）路由优化系统。核心思想是将信号灯控制与车辆路径选择结合，通过
+深度强化学习同时优化两者。目标城市路网主要为杭州（4×4 网格路网，16 个路口）。
+
+
+二、目录结构
+--------------------------------------------------------------------------------
+route_TSC/
+├── start.py              # 主入口：训练、评估、基线对比的各种运行模式
+├── config.py             # 全局配置：路口参数、RL超参数、邻居关系、方向映射等
+├── arguments.py          # 命令行参数定义（通用、PPO、MAT、MAPPO、MA2C等）
+├── env.py                # SUMO环境接口层：启动仿真、获取状态/奖励/压力等
+├── sumoEnv.py            # Gym风格的SUMO环境封装（SumoGymEnv，未完全使用）
+├── episode.py            # 单个episode运行逻辑：信号控制 + CAV路由协同仿真
+├── lights.py             # 多智能体管理器（Lights类）+ 多种MARL算法的step逻辑
+├── traffic_light.py      # 信号灯智能体定义：Light基类、TLight（RL控制）、MaxPressureTSC
+├── agent.py              # Agent基类 + CAVAgent（车辆路由智能体，含状态/动作/奖励逻辑）
+├── net.py                # 神经网络定义：DQN网络、Actor/Critic、ReplayBuffer、SelfAttention等
+├── dqnagent.py           # DQNAgent + CDQNAgent（带ICM好奇心驱动的DQN）
+├── ppoagent.py           # PPOAgent：近端策略优化
+├── utils.py              # 工具类：CsvInterpreter（流量解析）、Visualization（可视化/CSV导出）、XmlGenerator
+├── tripinfo.py           # SUMO输出解析：行程时间、等待时间、排放、排队长度等统计
+├── test.py               # 测试脚本
+├── algo/                 # 扩展路由算法
+│   ├── self_org_agent.py     # Self-Organization路由算法
+│   ├── iql_b_agent.py        # IQL-B路由算法
+│   ├── astar_dqn.py          # A*+DQN混合路由算法
+│   ├── adaptive_dqn.py       # 自适应DQN路由算法
+│   ├── nav_agent.py          # Navigation路由算法
+│   ├── dso_agent.py          # DSO路由算法
+│   ├── p_buffer.py           # 优先级经验回放
+│   ├── prioritized_memory.py # 优先级记忆
+│   ├── SumTree.py / sum_tree.py  # SumTree数据结构
+├── res/                  # SUMO仿真资源
+│   └── hangzhou/         # 杭州路网（4×4网格）
+│       ├── train.sumocfg         # 训练配置
+│       ├── exe_2983.sumocfg      # 评估配置（2983辆车）
+│       ├── exe_6984.sumocfg      # 评估配置（6984辆车）
+│       ├── 4_Phase.net.xml       # 路网拓扑文件
+│       ├── *.rou.xml             # 车辆路线文件
+│       └── *_cav_*.csv           # CAV车辆集合（不同seed、不同渗透率）
+├── model/                # 保存训练的模型权重
+├── simudata/             # 保存仿真数据（CSV、图表等）
+├── tripinfos.xml         # SUMO输出的行程信息
+└── queues.xml            # SUMO输出的排队信息
+
+
+三、核心模块关系
+--------------------------------------------------------------------------------
+
+start.py (入口)
+  │
+  ├── main()          ─── 训练模式：信号控制 + 车辆路由联合训练
+  ├── exe_flow()      ─── 评估模式：加载模型进行测试
+  ├── actuated()      ─── 基线：感应信号控制
+  ├── max_pressure()  ─── 基线：最大压力信号控制
+  ├── static()        ─── 基线：固定配时信号控制
+  └── greedy_strategy()── 基线：贪心路由策略
+        │
+        ▼
+  lights.init() ──→ Lights 对象（多智能体容器）
+        │                    │
+        │                    ├── TLight (信号灯RL智能体)
+        │                    │     └── rl_model: DQNAgent / PPOAgent / MATAgent / ...
+        │                    │
+        │                    └── d_step() ─── 各种MARL算法的step逻辑
+        │                           (MAT / MAPPO / MA2C / CenPPO / PS-PPO / DTDE)
+        │
+  episode.run() ──→ 单个episode仿真循环
+        │
+        ├── CAVAgent（车辆路由智能体，按algo参数动态导入）
+        │     ├── get_router_state2(): 获取全局路网状态
+        │     ├── get_avail_action(): 可用动作掩码
+        │     ├── step(): 执行路由动作
+        │     └── get_reward(): 计算路由奖励
+        │
+        ├── RouterNet（DQNAgent / PPOAgent，车辆路由网络）
+        │
+        └── env.py ──→ SUMO TraCI 接口
+              ├── start() / close() / step()
+              ├── get_state() / get_reward() / get_pressure()
+              ├── get_edge_state() / get_light_state()
+              └── find_adj_edge(): 解析路网拓扑邻接关系
+
+
+四、核心流程
+--------------------------------------------------------------------------------
+
+1. 训练流程 (main())
+   (1) 解析参数，根据 agent_type 选择对应的 MARL 算法
+   (2) lights.init() 启动 SUMO、创建各路口的 TLight 智能体
+   (3) 按需创建 RouterNet（DQN/PPO）用于 CAV 路由决策
+   (4) 循环多个 episode：
+       - episode.run() 运行 3600 步仿真
+       - 每步中，信号灯智能体决策相位，CAV 智能体决策路由
+       - 收集奖励，更新网络
+   (5) 保存模型和指标到 model/ 和 simudata/
+
+2. 评估流程 (exe_flow())
+   (1) 加载训练好的 RouterNet 模型
+   (2) 从 CSV 读取 CAV 车辆集合
+   (3) 运行仿真，收集各类性能指标（行程时长、等待时间、路径长度、CO2 排放等）
+   (4) 导出结果到 simudata/{name}/testFlow/
+
+3. CAV 路由决策（CAVAgent）
+   - 当 CAV 接近路口（距终点 100-150m）时触发决策
+   - 状态包括：全局路网的速度/密度/旅行时间/距终点距离/相位/绿灯剩余 + 车辆自身特征
+   - 动作空间：右转/直行/左转（/掉头），通过 get_avail_action() 生成可用动作掩码
+   - 奖励：负的行动时间 -dt，到达终点时给予基于路径效率的终止奖励
+
+
+五、支持的算法
+--------------------------------------------------------------------------------
+
+┌──────────┬─────────────┬─────────────────────────────────┐
+│   类别   │    算法     │              说明               │
+├──────────┼─────────────┼─────────────────────────────────┤
+│ 信号控制 │ DQN         │ 独立 DQN（DTDE）                │
+│          │ PPO         │ 独立 PPO                        │
+│          │ MAT         │ Multi-Agent Transformer（CTCE） │
+│          │ MAPPO       │ Multi-Agent PPO（CTDE）         │
+│          │ MA2C        │ Multi-Agent A2C                 │
+│          │ CenPPO      │ 集中式 PPO                      │
+│          │ PS-PPO      │ Parameter-Sharing PPO           │
+│          │ MaxPressure │ 最大压力（非 RL 基线）          │
+│          │ Actuated    │ 感应控制（非 RL 基线）          │
+├──────────┼─────────────┼─────────────────────────────────┤
+│ 车辆路由 │ hatt_router │ 基于 SelfAttention 的 DQN/PPO   │
+│          │ self_org    │ 自组织路由                      │
+│          │ iql_b       │ IQL-B 路由                      │
+│          │ astar_dqn   │ A*+DQN 混合路由                 │
+│          │ adaptive    │ 自适应 DQN 路由                 │
+│          │ nav         │ Navigation（带优先经验回放）    │
+│          │ dso         │ DSO 路由                        │
+└──────────┴─────────────┴─────────────────────────────────┘
+
+
+六、关键配置（config.py）
+--------------------------------------------------------------------------------
+
+- 路网拓扑：9 路口 3×3 网格（宣城）或 16 路口 4×4 网格（杭州）
+  邻接矩阵在 COP["ADJACENT"]
+- 仿真参数：运行时长 3600s，种子 25，使用 astar 路由算法
+- 路由 RL（ROUTER_RL）：
+  DQN（默认），lr=0.001，epsilon=0.9 衰减至 0.05，buffer=50000，batch=128
+- 信号 RL（RL）：
+  lr=0.001，epsilon=0.8 衰减至 0.1，buffer=1000，batch=300
+
+
+七、数据流
+--------------------------------------------------------------------------------
+
+  SUMO 仿真 (.sumocfg + .net.xml + .rou.xml)
+        │
+        ▼
+    env.py (TraCI)  ──→  状态/奖励/相位
+        │
+        ▼
+    episode.py ──→ 训练/评估循环
+        │
+        ▼
+    模型权重 → model/{name}/
+    仿真指标 → simudata/{name}/  (CSV: duration, waiting, speed, loss, CO2...)
+    行程信息 → tripinfos.xml → tripinfo.py 解析统计
+
+
+八、各文件详细说明
+--------------------------------------------------------------------------------
+
+1. start.py —— 主入口文件
+   - actuated():    感应控制基线，相位可按检测器延长，仿真12600步
+   - static():      固定配时基线，仿真3600步
+   - max_pressure(): 最大压力控制基线，仿真12600步
+   - process():     读取宣城流量CSV，生成OD对和转向关系XML
+   - main():        RL训练主函数，联合训练信号控制与车辆路由
+   - exe_flow():    评估函数，加载模型在指定场景上测试
+   - greedy_strategy(): 贪心路由基线评估
+   - __main__:      配置渗透率、调用 main() 训练 + exe_flow() 评估
+
+2. config.py —— 全局配置
+   - INTERSECTION:  路口参数（方向数、绿灯/黄灯时长等）
+   - NORM:          状态/奖励归一化参数
+   - SIMULATION:    仿真运行参数
+   - COP:           路口邻接矩阵（3×3网格）
+   - ROUTER_RL:     路由RL超参数
+   - RL:            信号控制RL超参数
+   - SPATIAL/TEMPORAL: 空间/时间特征提取配置
+   - direction_map: 每个路口各方向的目的地映射
+   - NEIGHBOR:      每个路口的四方邻居
+   - AGENT:         每个路口的动作/状态维度
+
+3. env.py —— SUMO环境接口
+   - start():       启动SUMO仿真
+   - step()/close(): 仿真推进/关闭
+   - init_context(): 订阅路口和车道信息
+   - get_state():   获取智能体观测状态（独立/局部/全局）
+   - get_reward():  计算奖励（排队长度/压力/等待时间等）
+   - get_pressure(): 计算上下游压力差
+   - get_edge_state(): 获取全局道路状态（速度/密度/旅行时间等）
+   - find_adj_edge(): 解析路网XML获取边邻接关系
+
+4. episode.py —— 单episode仿真
+   - run():         主循环3600步
+     - 根据 algo 参数动态导入对应的 CAVAgent
+     - 每步：CAV决策路由 → SUMO推进 → 收集奖励 → RouterNet训练
+     - 记录并导出 episode 级别的奖励和时长
+
+5. lights.py —— 多智能体管理器
+   - Lights:        包装所有信号灯智能体
+     - step():      简单固定周期控制
+     - d_step():    分发到各种MARL算法（MAT/MAPPO/MA2C/CenPPO/PS-PPO/DTDE）
+   - init():        创建所有 TLight 智能体并组装为 Lights
+   - create_agent_list(): 遍历SUMO路口，为每个路口创建 TLight
+
+6. traffic_light.py —— 信号灯智能体
+   - Light:          基类，管理信号灯基本属性和日志
+   - TLight(Light):  RL控制的信号灯，包含RL模型实例，实现step()决策逻辑
+   - MaxPressureTSC(Light): 最大压力控制，基于上下游车辆差选择相位
+
+7. agent.py —— 智能体基类和CAV
+   - Agent:          RL智能体基类（经验回放、embedding等）
+   - CAVAgent:       车辆路由智能体
+     - 初始化时进行 dijkstra 重路由获取默认路线
+     - get_router_state2(): 构建包含全局路网特征的状态向量
+     - get_avail_action(): 根据距目的地可达性生成动作掩码
+     - step():       执行路由动作，设置新路线
+     - get_reward():  计算时间惩罚或到达奖励
+
+8. net.py —— 神经网络模块
+   - DQN:            Q网络（支持FC/GAT/GRU组合 + Self-Attention）
+   - Actor/Critic:   PPO的策略/价值网络
+   - ReplayBuffer:   经验回放缓冲区
+   - PPOReplayBuffer: PPO专用缓冲区
+   - SelfAttention:  自注意力机制模块
+   - ICM(DQN):       内在好奇心模块（前向/反向预测）
+
+9. dqnagent.py —— DQN智能体
+   - DQNAgent:       标准DQN（支持多种网络骨架：DDQNNet/IQLNet/ADQNNet等）
+   - CDQNAgent:      带ICM好奇心驱动的DQN
+
+10. ppoagent.py —— PPO智能体
+    - PPOAgent:      离散动作PPO，GAE优势估计，多种trick
+
+11. utils.py —— 工具模块
+    - CsvInterpreter: 解析宣城流量CSV，计算OD对
+    - Visualization:  CSV导出、各类图表绘制（奖励曲线、柱状图、雷达图等）
+    - XmlGenerator:   根据OD对生成SUMO转向关系XML
+
+12. tripinfo.py —— 仿真结果解析
+    - 从 tripinfos.xml 提取：平均行程时间、等待时间、速度、排放、排队等
+    - 支持按CAV子集筛选统计
+    - 支持OD热力图和排队热力图可视化
+
+13. arguments.py —— 参数定义
+    - get_common_args():    通用参数（路网、RL、状态、动作等）
+    - get_ppo_arguments():  PPO参数
+    - get_mat_arguments():  MAT（Transformer）参数
+    - get_mappo_arguments(): MAPPO参数
+    - get_ma2c_arguments():  MA2C参数
+
+================================================================================
+                            文档生成日期：2026-03-01
+================================================================================

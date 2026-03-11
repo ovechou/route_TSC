@@ -1,0 +1,28 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+
+# Logs and outputs
+*.log
+runs/
+output*/
+
+# SUMO and simulation artifacts
+simudata/
+*.sumocfg
+*.net.xml
+*.rou.xml
+*.traci
+
+# Models and checkpoints
+model/
+checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db
